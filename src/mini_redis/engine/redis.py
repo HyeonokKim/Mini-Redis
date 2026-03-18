@@ -6,7 +6,7 @@ from typing import Any
 
 from mini_redis.persistence.manager import PersistenceManager
 from mini_redis.storage.manager import StorageManager
-from mini_redis.storage.mongo_adapter import MongoAdapter
+from mini_redis.storage.mongo_manager import MongoManager
 from mini_redis.storage.ttl import TTLManager
 
 
@@ -18,7 +18,7 @@ class Redis:
         storage: StorageManager,
         ttl: TTLManager,
         persistence: PersistenceManager,
-        mongo: MongoAdapter,
+        mongo: MongoManager,
     ) -> None:
         self._storage = storage
         self._ttl = ttl
@@ -36,13 +36,15 @@ class Redis:
         self._storage.set(key, value)
         self._ttl.set_expiration(key, ttl_seconds)
         self._persistence.append("SET", key, value, ttl_seconds)
-        self._mongo.maybe_sync(key, value)
+        self._mongo.sync_value(key, value)
         return "OK"
 
     def delete(self, key: str) -> int:
         self._ttl.clear_expiration(key)
         deleted = 1 if self._storage.delete(key) else 0
         self._persistence.append("DELETE", key)
+        if deleted:
+            self._mongo.delete_key(key)
         return deleted
 
     def exists(self, key: str) -> int:
@@ -79,13 +81,15 @@ class Redis:
 
         self._storage.set(key, str(next_value))
         self._persistence.append("INCR", key)
-        self._mongo.maybe_sync(key, str(next_value))
+        self._mongo.sync_value(key, str(next_value))
         return next_value
 
     def flushdb(self) -> int:
         removed = self._storage.clear()
         self._ttl.clear_all()
         self._persistence.append("FLUSHDB")
+        if removed:
+            self._mongo.clear()
         return removed
 
     def save(self) -> str:
@@ -113,6 +117,10 @@ class Redis:
         normalized = section.upper()
         if normalized == "PERSISTENCE":
             payload = self._persistence.info()
+            payload["key_count"] = self.key_count()
+            return payload
+        if normalized == "MONGO":
+            payload = self._mongo.info()
             payload["key_count"] = self.key_count()
             return payload
         return "ERR unsupported INFO section"
