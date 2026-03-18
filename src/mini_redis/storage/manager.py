@@ -31,3 +31,6 @@ class StorageManager:
         removed = len(self._data)
         self._data.clear()
         return removed
+
+    def load_items(self, values: dict[str, str]) -> None:
+        self._data = dict(values)

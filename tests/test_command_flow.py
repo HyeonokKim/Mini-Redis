@@ -1,14 +1,35 @@
 import time
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from mini_redis.bootstrap import build_command_manager
-from mini_redis.config import APPEND_ONLY_FILE, SNAPSHOT_FILE
-
 
 class CommandFlowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        base = Path(self.temp_dir.name)
+        self.appendonly_path = base / "appendonly.aof"
+        self.snapshot_path = base / "dump.rdb.json"
+        self.metadata_path = base / "persistence.meta.json"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def build_manager(self):
+        return build_command_manager(
+            appendonly_path=self.appendonly_path,
+            snapshot_path=self.snapshot_path,
+            metadata_path=self.metadata_path,
+        )
+
     def test_basic_command_flow(self) -> None:
-        manager = build_command_manager()
+        manager = self.build_manager()
+        self.assertIsNotNone(manager.recovery_report)
+        self.assertFalse(manager.recovery_report.snapshot_loaded)
+        self.assertEqual(manager.recovery_report.replayed_entries, 0)
+        self.assertFalse(manager.recovery_report.aof_corruption_detected)
+        self.assertEqual(manager.recovery_report.ignored_aof_entries, 0)
 
         self.assertEqual(manager.execute({"name": "PING", "args": []}), "PONG")
         self.assertEqual(manager.execute({"name": "SET", "args": ["user:1", "hello"]}), "OK")
@@ -19,7 +40,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertIsNone(manager.execute({"name": "GET", "args": ["user:1"]}))
 
     def test_ttl_commands(self) -> None:
-        manager = build_command_manager()
+        manager = self.build_manager()
 
         self.assertEqual(manager.execute({"name": "SET", "args": ["temp", "1"]}), "OK")
         self.assertEqual(manager.execute({"name": "EXPIRE", "args": ["temp", "1"]}), 1)
@@ -30,7 +51,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "TTL", "args": ["temp"]}), -2)
 
     def test_keys_returns_sorted_live_keys(self) -> None:
-        manager = build_command_manager()
+        manager = self.build_manager()
 
         manager.execute({"name": "SET", "args": ["b", "2"]})
         manager.execute({"name": "SET", "args": ["a", "1"]})
@@ -38,7 +59,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), ["a", "b"])
 
     def test_incr_and_mget(self) -> None:
-        manager = build_command_manager()
+        manager = self.build_manager()
 
         self.assertEqual(manager.execute({"name": "INCR", "args": ["counter"]}), 1)
         self.assertEqual(manager.execute({"name": "INCR", "args": ["counter"]}), 2)
@@ -49,16 +70,242 @@ class CommandFlowTest(unittest.TestCase):
             ["2", "10", None],
         )
 
+    def test_info_persistence_reports_runtime_state(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["alpha", "1"]})
+        manager.execute({"name": "SAVE", "args": []})
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["key_count"], 1)
+        self.assertTrue(info["snapshot_exists"])
+        self.assertTrue(info["aof_exists"])
+        self.assertTrue(info["metadata_exists"])
+        self.assertGreaterEqual(info["operation_log_length"], 1)
+        self.assertIn("last_recovery", info)
+        self.assertEqual(info["metadata"]["last_action"], "save")
+        self.assertEqual(info["metadata"]["schema_version"], 2)
+        self.assertEqual(info["recovery_policy"], "best-effort")
+        self.assertEqual(info["config"]["fsync_policy"], "everysec")
+
     def test_save_and_flushdb(self) -> None:
-        manager = build_command_manager()
+        manager = self.build_manager()
         manager.execute({"name": "SET", "args": ["persist:key", "value"]})
 
         snapshot_path = Path(manager.execute({"name": "SAVE", "args": []}))
-        self.assertEqual(snapshot_path, SNAPSHOT_FILE)
+        self.assertEqual(snapshot_path, self.snapshot_path)
         self.assertTrue(snapshot_path.exists())
+        self.assertTrue(self.metadata_path.exists())
         self.assertEqual(manager.execute({"name": "FLUSHDB", "args": []}), 1)
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), [])
-        self.assertTrue(APPEND_ONLY_FILE.exists())
+        self.assertTrue(self.appendonly_path.exists())
+
+    def test_load_restores_snapshot_without_replaying_newer_aof_entries(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["persist:key", "value"]})
+        manager.execute({"name": "SAVE", "args": []})
+        manager.execute({"name": "SET", "args": ["persist:key", "new-value"]})
+
+        self.assertEqual(manager.execute({"name": "LOAD", "args": []}), "OK")
+        self.assertEqual(
+            manager.execute({"name": "GET", "args": ["persist:key"]}),
+            "value",
+        )
+
+    def test_restore_replays_only_aof_entries_after_snapshot(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["count", "5"]})
+        manager.execute({"name": "SAVE", "args": []})
+        manager.execute({"name": "INCR", "args": ["count"]})
+        manager.execute({"name": "SET", "args": ["name", "mini-redis"]})
+
+        restored = self.build_manager()
+        self.assertTrue(restored.recovery_report.snapshot_loaded)
+        self.assertEqual(restored.recovery_report.replayed_entries, 2)
+        self.assertEqual(restored.execute({"name": "GET", "args": ["count"]}), "6")
+        self.assertEqual(
+            restored.execute({"name": "GET", "args": ["name"]}),
+            "mini-redis",
+        )
+
+    def test_restore_replays_expire_after_snapshot(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["session", "ok"]})
+        manager.execute({"name": "SAVE", "args": []})
+        manager.execute({"name": "EXPIRE", "args": ["session", "1"]})
+
+        restored = self.build_manager()
+        ttl = restored.execute({"name": "TTL", "args": ["session"]})
+        self.assertIn(ttl, {0, 1})
+
+    def test_rewrite_aof_compacts_current_state(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["name", "redis"]})
+        manager.execute({"name": "INCR", "args": ["counter"]})
+        manager.execute({"name": "EXPIRE", "args": ["name", "30"]})
+
+        rewritten_path = Path(manager.execute({"name": "REWRITEAOF", "args": []}))
+        self.assertEqual(rewritten_path, self.appendonly_path)
+        lines = rewritten_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(any('"op": "SET"' in line for line in lines))
+
+    def test_restore_ignores_corrupted_aof_tail(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        self.appendonly_path.write_text(
+            self.appendonly_path.read_text(encoding="utf-8") + '{"op": "SET", "args": ["broken"]\n',
+            encoding="utf-8",
+        )
+
+        restored = self.build_manager()
+        self.assertTrue(restored.recovery_report.aof_corruption_detected)
+        self.assertEqual(restored.recovery_report.ignored_aof_entries, 1)
+        self.assertIsNotNone(restored.recovery_report.corrupted_aof_line)
+        self.assertEqual(restored.execute({"name": "GET", "args": ["safe"]}), "value")
+
+    def test_repair_aof_truncates_corrupted_tail(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        original = self.appendonly_path.read_text(encoding="utf-8")
+        self.appendonly_path.write_text(original + '{"bad": \n', encoding="utf-8")
+
+        result = manager.execute({"name": "REPAIRAOF", "args": []})
+        self.assertTrue(result["repaired"])
+        self.assertTrue(result["corruption_detected"])
+        self.assertEqual(result["ignored_entries"], 1)
+        self.assertEqual(self.appendonly_path.read_text(encoding="utf-8"), original)
+        metadata = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})["metadata"]
+        self.assertEqual(metadata["last_action"], "repair_aof")
+        self.assertEqual(metadata["last_repair"]["ignored_entries"], 1)
+
+    def test_restore_persists_recovery_metadata_file(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+
+        restored = self.build_manager()
+        self.assertTrue(self.metadata_path.exists())
+        info = restored.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["metadata"]["last_action"], "restore")
+
+    def test_repair_aof_is_noop_for_clean_file(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+
+        result = manager.execute({"name": "REPAIRAOF", "args": []})
+        self.assertFalse(result["repaired"])
+        self.assertFalse(result["corruption_detected"])
+
+    def test_bgsave_completes_and_updates_metadata(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        result = manager.execute({"name": "BGSAVE", "args": []})
+        self.assertTrue(result["queued"])
+
+        for _ in range(20):
+            info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+            if info["background_tasks"]["bgsave"]["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["background_tasks"]["bgsave"]["status"], "completed")
+        self.assertTrue(self.snapshot_path.exists())
+
+    def test_bgrewriteaof_completes(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        result = manager.execute({"name": "BGREWRITEAOF", "args": []})
+        self.assertTrue(result["queued"])
+
+        for _ in range(20):
+            info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+            if info["background_tasks"]["bgrewriteaof"]["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["background_tasks"]["bgrewriteaof"]["status"], "completed")
+        self.assertTrue(self.appendonly_path.exists())
+
+    def test_config_get_and_set_updates_runtime_persistence_settings(self) -> None:
+        manager = self.build_manager()
+        self.assertEqual(
+            manager.execute({"name": "CONFIG", "args": ["GET", "fsync_policy"]}),
+            {"fsync_policy": "everysec"},
+        )
+        self.assertEqual(
+            manager.execute({"name": "CONFIG", "args": ["SET", "fsync_policy", "always"]}),
+            "OK",
+        )
+        self.assertEqual(
+            manager.execute({"name": "CONFIG", "args": ["SET", "autorewrite_min_operations", "5"]}),
+            "OK",
+        )
+        config = manager.execute({"name": "CONFIG", "args": ["GET", "*"]})
+        self.assertEqual(config["fsync_policy"], "always")
+        self.assertEqual(config["autorewrite_min_operations"], 5)
+
+    def test_autorewrite_threshold_schedules_background_task(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "CONFIG", "args": ["SET", "autorewrite_min_operations", "1"]})
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+
+        for _ in range(20):
+            info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+            task = info["background_tasks"].get("bgrewriteaof")
+            if task and task["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["background_tasks"]["bgrewriteaof"]["status"], "completed")
+
+    def test_autosave_interval_schedules_background_save(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "CONFIG", "args": ["SET", "autosave_interval", "1"]})
+        time.sleep(1.1)
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+
+        for _ in range(20):
+            info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+            task = info["background_tasks"].get("bgsave")
+            if task and task["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["background_tasks"]["bgsave"]["status"], "completed")
+
+    def test_aof_only_policy_ignores_snapshot(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["persist:key", "value"]})
+        manager.execute({"name": "SAVE", "args": []})
+        self.appendonly_path.unlink(missing_ok=True)
+
+        restored = build_command_manager(
+            appendonly_path=self.appendonly_path,
+            snapshot_path=self.snapshot_path,
+            metadata_path=self.metadata_path,
+            recovery_policy="aof-only",
+        )
+        self.assertFalse(restored.recovery_report.snapshot_loaded)
+        self.assertIsNone(restored.execute({"name": "GET", "args": ["persist:key"]}))
+
+    def test_strict_policy_fails_on_corrupted_aof(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        self.appendonly_path.write_text(
+            self.appendonly_path.read_text(encoding="utf-8") + '{"bad": \n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(ValueError):
+            build_command_manager(
+                appendonly_path=self.appendonly_path,
+                snapshot_path=self.snapshot_path,
+                metadata_path=self.metadata_path,
+                recovery_policy="strict",
+            )
 
 
 if __name__ == "__main__":

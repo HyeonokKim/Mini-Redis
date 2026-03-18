@@ -3,6 +3,8 @@ import socket
 import threading
 import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from mini_redis.bootstrap import build_command_manager
 from mini_redis.network.tcp_client import TCPClient
@@ -11,12 +13,24 @@ from mini_redis.protocol.resp import RespCodec
 
 
 class TcpRoundTripTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        base = Path(self.temp_dir.name)
+        self.appendonly_path = base / "appendonly.aof"
+        self.snapshot_path = base / "dump.rdb.json"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
     def test_tcp_roundtrip(self) -> None:
         try:
             server = TCPServer(
                 host="127.0.0.1",
                 port=6391,
-                manager=build_command_manager(),
+                manager=build_command_manager(
+                    appendonly_path=self.appendonly_path,
+                    snapshot_path=self.snapshot_path,
+                ),
                 codec=RespCodec(),
             )
         except PermissionError as exc:

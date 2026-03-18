@@ -49,5 +49,20 @@ class TTLManager:
     def export(self) -> dict[str, str]:
         return {key: value.isoformat() for key, value in self._expirations.items()}
 
+    def export_remaining(self, storage: StorageManager) -> dict[str, int]:
+        self.purge_expired_keys(storage)
+        remaining: dict[str, int] = {}
+        now = datetime.now(timezone.utc)
+        for key, expires_at in self._expirations.items():
+            seconds = int((expires_at - now).total_seconds())
+            remaining[key] = max(seconds, 0)
+        return remaining
+
     def clear_all(self) -> None:
         self._expirations.clear()
+
+    def load_expirations(self, values: dict[str, str], storage: StorageManager) -> None:
+        self._expirations = {
+            key: datetime.fromisoformat(value) for key, value in values.items()
+        }
+        self.purge_expired_keys(storage)
