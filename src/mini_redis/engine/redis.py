@@ -54,7 +54,8 @@ class Redis:
             self._invalidation.set_tags(key, tags)
         # Persist tags together with the value so snapshot/AOF replay keeps invalidation semantics.
         self._persistence.append("SET", key, value, ttl_seconds, tags)
-        return "OK"
+        mongo_write_elapsed = self._mongo.write_value(key, value)
+        return self._format_set_response(mongo_write_elapsed)
 
     def delete(self, key: str) -> int:
         self._ttl.clear_expiration(key)
@@ -62,6 +63,8 @@ class Redis:
         self._invalidation.clear_key(key)
         deleted = 1 if self._storage.delete(key) else 0
         self._persistence.append("DELETE", key)
+        if deleted:
+            self._mongo.delete_key(key)
         return deleted
 
     def exists(self, key: str) -> int:
@@ -115,6 +118,7 @@ class Redis:
 
         self._storage.set(key, str(next_value))
         self._persistence.append("INCR", key)
+        self._mongo.write_value(key, str(next_value))
         return next_value
 
     def flushdb(self) -> int:
@@ -123,6 +127,7 @@ class Redis:
         # FLUSHDB must wipe secondary indexes too or later INVALIDATE calls can see stale keys.
         self._invalidation.clear_all()
         self._persistence.append("FLUSHDB")
+        self._mongo.clear()
         return removed
 
     def invalidate(self, tag: str) -> int:
@@ -225,35 +230,64 @@ class Redis:
         target: str,
         operations: int,
         *,
+        operation: str | None = None,
         keep_data: bool = False,
     ) -> str:
         normalized = target.upper()
+        normalized_operation = (
+            "WRITE" if operation is None and normalized in {"MONGO", "HYBRID"} else operation
+        )
+        if normalized_operation is None:
+            normalized_operation = "SET"
+        normalized_operation = normalized_operation.upper()
         if operations <= 0:
             return "ERR operations must be a positive integer"
 
         if normalized == "REDIS":
-            result = self._benchmark_suite.benchmark_redis_set(
-                self._storage,
-                operations,
-                key_prefix="bench:redis:",
-                keep_data=keep_data,
-            )
+            if normalized_operation == "SET":
+                result = self._benchmark_suite.benchmark_redis_set(
+                    self._storage,
+                    operations,
+                    key_prefix="bench:redis:",
+                    keep_data=keep_data,
+                )
+            elif normalized_operation == "GET":
+                result = self._benchmark_suite.benchmark_redis_get(
+                    self._storage,
+                    operations,
+                    key_prefix="bench:redis:",
+                    keep_data=keep_data,
+                )
+            else:
+                return "ERR unsupported benchmark operation"
             return self._format_benchmark_result(result)
 
         if normalized == "MONGO":
             if not self._mongo.enabled:
                 return "ERR MongoDB benchmark requires mongo integration to be enabled"
-            result = self._benchmark_suite.benchmark_mongo_write(
-                self._mongo,
-                operations,
-                key_prefix="bench:mongo:",
-                keep_data=keep_data,
-            )
+            if normalized_operation == "WRITE":
+                result = self._benchmark_suite.benchmark_mongo_write(
+                    self._mongo,
+                    operations,
+                    key_prefix="bench:mongo:",
+                    keep_data=keep_data,
+                )
+            elif normalized_operation == "GET":
+                result = self._benchmark_suite.benchmark_mongo_get(
+                    self._mongo,
+                    operations,
+                    key_prefix="bench:mongo:",
+                    keep_data=keep_data,
+                )
+            else:
+                return "ERR unsupported benchmark operation"
             return self._format_benchmark_result(result)
 
         if normalized == "HYBRID":
             if not self._mongo.enabled:
                 return "ERR hybrid benchmark requires mongo integration to be enabled"
+            if normalized_operation != "WRITE":
+                return "ERR unsupported benchmark operation"
             result = self._benchmark_suite.benchmark_hybrid_write(
                 self._storage,
                 self._mongo,
@@ -464,6 +498,11 @@ class Redis:
         for key, value in payload.items():
             append_lines(str(key), value)
         return "\r\n".join(lines)
+
+    def _format_set_response(self, mongo_write_elapsed: float | None) -> str:
+        if mongo_write_elapsed is None:
+            return "OK"
+        return f"OK mongo_write={mongo_write_elapsed:.6f}s"
 
     def _format_benchmark_result(self, result: BenchmarkResult) -> str:
         payload: dict[str, Any] = {

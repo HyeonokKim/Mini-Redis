@@ -5,6 +5,60 @@ from tempfile import TemporaryDirectory
 
 from mini_redis.bootstrap import build_command_manager
 
+
+class _CommandFlowFakeAdmin:
+    def command(self, name: str) -> None:
+        return None
+
+
+class _CommandFlowFakeCollection:
+    def __init__(self) -> None:
+        self.documents: dict[str, dict[str, str]] = {}
+
+    def update_one(
+        self,
+        criteria: dict[str, str],
+        payload: dict[str, dict[str, str]],
+        upsert: bool = False,
+    ) -> None:
+        key = criteria["_id"]
+        value = payload["$set"]["value"]
+        if upsert or key in self.documents:
+            self.documents[key] = {"_id": key, "value": value}
+
+    def find_one(self, criteria: dict[str, str]) -> dict[str, str] | None:
+        return self.documents.get(criteria["_id"])
+
+    def delete_one(self, criteria: dict[str, str]) -> None:
+        self.documents.pop(criteria["_id"], None)
+
+    def delete_many(self, criteria: dict[str, str]) -> None:
+        self.documents.clear()
+
+
+class _CommandFlowFakeDatabase:
+    def __init__(self) -> None:
+        self.collections: dict[str, _CommandFlowFakeCollection] = {}
+
+    def __getitem__(self, name: str) -> _CommandFlowFakeCollection:
+        if name not in self.collections:
+            self.collections[name] = _CommandFlowFakeCollection()
+        return self.collections[name]
+
+
+class _CommandFlowFakeMongoClient:
+    def __init__(self, uri: str, serverSelectionTimeoutMS: int) -> None:
+        self.uri = uri
+        self.server_selection_timeout_ms = serverSelectionTimeoutMS
+        self.admin = _CommandFlowFakeAdmin()
+        self.databases: dict[str, _CommandFlowFakeDatabase] = {}
+
+    def __getitem__(self, name: str) -> _CommandFlowFakeDatabase:
+        if name not in self.databases:
+            self.databases[name] = _CommandFlowFakeDatabase()
+        return self.databases[name]
+
+
 class CommandFlowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
@@ -190,6 +244,38 @@ class CommandFlowTest(unittest.TestCase):
         self.assertIn("target:redis", payload)
         self.assertIn("storage.latency.max_us:", payload)
         self.assertIn("storage.is_rehashing:", payload)
+
+    def test_benchmark_redis_get_reports_latency_summary(self) -> None:
+        manager = self.build_manager()
+
+        payload = manager.execute({"name": "BENCHMARK", "args": ["REDIS", "GET", "8", "KEEP"]})
+
+        self.assertIn("# Benchmark", payload)
+        self.assertIn("target:redis", payload)
+        self.assertIn("operation:get", payload)
+        self.assertIn("storage.latency.max_us:", payload)
+
+    def test_benchmark_mongo_get_reports_latency_summary(self) -> None:
+        manager = build_command_manager(
+            appendonly_path=self.appendonly_path,
+            snapshot_path=self.snapshot_path,
+            metadata_path=self.metadata_path,
+            mongo_enabled=True,
+            mongo_uri="mongodb://127.0.0.1:27017",
+            mongo_db="mini_redis",
+            mongo_collection="kv_store",
+            mongo_client_factory=lambda uri, serverSelectionTimeoutMS: _CommandFlowFakeMongoClient(
+                uri,
+                serverSelectionTimeoutMS,
+            ),
+        )
+
+        payload = manager.execute({"name": "BENCHMARK", "args": ["MONGO", "GET", "8"]})
+
+        self.assertIn("# Benchmark", payload)
+        self.assertIn("target:mongo", payload)
+        self.assertIn("operation:get", payload)
+        self.assertIn("mongo.operation_count:", payload)
 
     def test_probe_set_reports_request_latency_and_resize_state(self) -> None:
         manager = self.build_manager()
@@ -461,6 +547,26 @@ class CommandFlowTest(unittest.TestCase):
         time.sleep(1.1)
 
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), ["live"])
+
+    def test_set_reports_mongo_write_time_when_mongo_sync_is_enabled(self) -> None:
+        manager = build_command_manager(
+            appendonly_path=self.appendonly_path,
+            snapshot_path=self.snapshot_path,
+            metadata_path=self.metadata_path,
+            mongo_enabled=True,
+            mongo_uri="mongodb://127.0.0.1:27017",
+            mongo_db="mini_redis",
+            mongo_collection="kv_store",
+            mongo_client_factory=lambda uri, serverSelectionTimeoutMS: _CommandFlowFakeMongoClient(
+                uri,
+                serverSelectionTimeoutMS,
+            ),
+        )
+
+        result = manager.execute({"name": "SET", "args": ["user:1", "hello"]})
+
+        self.assertTrue(str(result).startswith("OK mongo_write="))
+        self.assertEqual(manager.execute({"name": "GET", "args": ["user:1"]}), "hello")
 
 
 if __name__ == "__main__":
