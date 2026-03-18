@@ -36,7 +36,10 @@ BGREWRITEAOF
 CONFIG GET *
 CONFIG SET fsync_policy always
 SET user:1 hello
+SET user:1:profile profile TAGS user:1
+SET user:1:posts posts EX 60 TAGS user:1 feed
 GET user:1
+INVALIDATE user:1
 INFO PERSISTENCE
 MGET user:1 user:2
 EXISTS user:1
