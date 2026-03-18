@@ -3,6 +3,7 @@ from pathlib import Path
 from shutil import rmtree
 
 from mini_redis.bootstrap import build_command_manager
+from mini_redis.storage.benchmark import StorageBenchmarkSuite
 from mini_redis.storage.mongo_adapter import MongoAdapter
 from mini_redis.storage.mongo_manager import MongoManager
 
@@ -144,6 +145,51 @@ class MongoIntegrationTest(unittest.TestCase):
             [("upsert", "user:1"), ("delete", "user:1"), ("clear", None)],
         )
         self.assertEqual(manager.info()["operation_count"], 3)
+
+    def test_redis_commands_do_not_auto_sync_to_mongo(self) -> None:
+        base = Path("data/test-mongo-info")
+        base.mkdir(parents=True, exist_ok=True)
+        appendonly_path = base / "appendonly.aof"
+        snapshot_path = base / "dump.rdb.json"
+        metadata_path = base / "persistence.meta.json"
+        for path in (appendonly_path, snapshot_path, metadata_path):
+            path.unlink(missing_ok=True)
+
+        manager = build_command_manager(
+            appendonly_path=appendonly_path,
+            snapshot_path=snapshot_path,
+            metadata_path=metadata_path,
+            mongo_enabled=True,
+            mongo_uri="mongodb://127.0.0.1:27017",
+            mongo_db="mini_redis",
+            mongo_collection="kv_store",
+            mongo_client_factory=FakeMongoClient,
+        )
+
+        self.assertEqual(
+            manager.execute({"name": "SET", "args": ["user:1", "hello"]}),
+            "OK",
+        )
+
+        info = manager.execute({"name": "INFO", "args": ["MONGO"]})
+        self.assertEqual(info["operation_count"], 0)
+
+    def test_benchmark_suite_measures_redis_and_mongo_separately(self) -> None:
+        from mini_redis.storage.manager import StorageManager
+
+        suite = StorageBenchmarkSuite()
+        storage = StorageManager()
+        mongo = MongoManager(FakeMongoAdapter())
+
+        redis_result = suite.benchmark_redis_set(storage, 5)
+        mongo_result = suite.benchmark_mongo_write(mongo, 5)
+
+        self.assertEqual(redis_result.target, "redis")
+        self.assertEqual(redis_result.operation, "set")
+        self.assertEqual(redis_result.operations, 5)
+        self.assertEqual(mongo_result.target, "mongo")
+        self.assertEqual(mongo_result.operation, "write")
+        self.assertEqual(mongo_result.operations, 5)
 
     def test_build_manager_exposes_mongo_info_section(self) -> None:
         base = Path("data/test-mongo-info")

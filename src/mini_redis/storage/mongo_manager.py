@@ -17,12 +17,16 @@ class MongoManager:
     def enabled(self) -> bool:
         return self._adapter.enabled
 
-    def sync_value(self, key: str, value: str) -> None:
+    def write_value(self, key: str, value: str) -> None:
         self._adapter.upsert(key, value)
+
+    def sync_value(self, key: str, value: str) -> None:
+        # Compatibility shim for older code paths that still call the previous sync-oriented API.
+        self.write_value(key, value)
 
     def maybe_sync(self, key: str, value: str) -> None:
         # Compatibility shim for code written before MongoManager replaced direct adapter usage.
-        self.sync_value(key, value)
+        self.write_value(key, value)
 
     def delete_key(self, key: str) -> None:
         self._adapter.delete(key)
