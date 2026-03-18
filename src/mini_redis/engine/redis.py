@@ -129,6 +129,9 @@ class Redis:
         path = self._persistence.rewrite_aof(entries)
         return str(path)
 
+    def repair_aof(self) -> dict[str, Any]:
+        return self._persistence.repair_aof()
+
     def restore_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._storage.load_items(
             {str(key): str(value) for key, value in snapshot.get("storage", {}).items()}

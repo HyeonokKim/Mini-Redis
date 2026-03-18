@@ -155,6 +155,26 @@ class CommandFlowTest(unittest.TestCase):
         self.assertIsNotNone(restored.recovery_report.corrupted_aof_line)
         self.assertEqual(restored.execute({"name": "GET", "args": ["safe"]}), "value")
 
+    def test_repair_aof_truncates_corrupted_tail(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        original = self.appendonly_path.read_text(encoding="utf-8")
+        self.appendonly_path.write_text(original + '{"bad": \n', encoding="utf-8")
+
+        result = manager.execute({"name": "REPAIRAOF", "args": []})
+        self.assertTrue(result["repaired"])
+        self.assertTrue(result["corruption_detected"])
+        self.assertEqual(result["ignored_entries"], 1)
+        self.assertEqual(self.appendonly_path.read_text(encoding="utf-8"), original)
+
+    def test_repair_aof_is_noop_for_clean_file(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+
+        result = manager.execute({"name": "REPAIRAOF", "args": []})
+        self.assertFalse(result["repaired"])
+        self.assertFalse(result["corruption_detected"])
+
 
 if __name__ == "__main__":
     unittest.main()

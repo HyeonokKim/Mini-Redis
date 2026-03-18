@@ -96,6 +96,19 @@ class PersistenceManager:
     def rewrite_aof(self, state_entries: list[dict[str, Any]]) -> Path:
         return self._aof_writer.rewrite(state_entries)
 
+    def repair_aof(self) -> dict[str, Any]:
+        result = self._aof_writer.repair()
+        if result["repaired"]:
+            self._last_recovery_report = RecoveryReport(
+                snapshot_loaded=self._last_recovery_report.snapshot_loaded,
+                replayed_entries=self._last_recovery_report.replayed_entries,
+                recovered_keys=self._last_recovery_report.recovered_keys,
+                aof_corruption_detected=False,
+                ignored_aof_entries=0,
+                corrupted_aof_line=None,
+            )
+        return result
+
     def info(self) -> dict[str, Any]:
         aof_path = self._aof_writer._path
         snapshot_path = self._snapshot_store._path

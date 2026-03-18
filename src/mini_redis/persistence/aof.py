@@ -75,3 +75,25 @@ class AOFWriter:
             for entry in entries:
                 handle.write(json.dumps(entry) + "\n")
         return self._path
+
+    def repair(self) -> dict[str, Any]:
+        result = self.read_entries()
+        if not self._path.exists():
+            return {
+                "path": str(self._path),
+                "repaired": False,
+                "corruption_detected": False,
+                "ignored_entries": 0,
+                "corrupted_line": None,
+            }
+
+        if result.corruption_detected:
+            self.rewrite(result.entries)
+
+        return {
+            "path": str(self._path),
+            "repaired": result.corruption_detected,
+            "corruption_detected": result.corruption_detected,
+            "ignored_entries": result.ignored_entries,
+            "corrupted_line": result.corrupted_line,
+        }
