@@ -30,7 +30,7 @@ class Redis:
         return "PONG"
 
     def get(self, key: str) -> str | None:
-        self._ttl.purge_if_expired(key, self._storage)
+        self._purge_key_if_needed(key)
         return self._storage.get(key)
 
     def set(self, key: str, value: str, ttl_seconds: int | None = None) -> str:
@@ -50,11 +50,11 @@ class Redis:
         return deleted
 
     def exists(self, key: str) -> int:
-        self._ttl.purge_if_expired(key, self._storage)
+        self._purge_key_if_needed(key)
         return 1 if self._storage.exists(key) else 0
 
     def expire(self, key: str, ttl_seconds: int) -> int:
-        self._ttl.purge_if_expired(key, self._storage)
+        self._purge_key_if_needed(key)
         if not self._storage.exists(key):
             return 0
         self._ttl.set_expiration(key, ttl_seconds)
@@ -62,10 +62,11 @@ class Redis:
         return 1
 
     def ttl(self, key: str) -> int:
+        self._purge_key_if_needed(key)
         return self._ttl.ttl(key, self._storage)
 
     def keys(self) -> list[str]:
-        self._ttl.purge_expired_keys(self._storage)
+        self._purge_expired_keys()
         return self._storage.keys()
 
     def mget(self, keys: list[str]) -> list[str | None]:
@@ -104,3 +105,9 @@ class Redis:
 
     def quit(self) -> str:
         return "BYE"
+
+    def _purge_key_if_needed(self, key: str) -> None:
+        self._ttl.purge_if_expired(key, self._storage)
+
+    def _purge_expired_keys(self) -> None:
+        self._ttl.purge_expired_keys(self._storage)

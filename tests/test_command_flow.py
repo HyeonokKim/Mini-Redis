@@ -8,6 +8,7 @@ from mini_redis.config import APPEND_ONLY_FILE, SNAPSHOT_FILE
 
 class CommandFlowTest(unittest.TestCase):
     def test_basic_command_flow(self) -> None:
+        # This checks the main command path stays intact for core CRUD commands.
         manager = build_command_manager()
 
         self.assertEqual(manager.execute({"name": "PING", "args": []}), "PONG")
@@ -19,6 +20,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertIsNone(manager.execute({"name": "GET", "args": ["user:1"]}))
 
     def test_ttl_commands(self) -> None:
+        # This verifies lazy expiration clears expired keys through normal commands.
         manager = build_command_manager()
 
         self.assertEqual(manager.execute({"name": "SET", "args": ["temp", "1"]}), "OK")
@@ -30,6 +32,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "TTL", "args": ["temp"]}), -2)
 
     def test_keys_returns_sorted_live_keys(self) -> None:
+        # This confirms user-facing key listing stays sorted and ignores stale removals.
         manager = build_command_manager()
 
         manager.execute({"name": "SET", "args": ["b", "2"]})
@@ -38,6 +41,7 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), ["a", "b"])
 
     def test_incr_and_mget(self) -> None:
+        # This keeps arithmetic and multi-read behavior covered end to end.
         manager = build_command_manager()
 
         self.assertEqual(manager.execute({"name": "INCR", "args": ["counter"]}), 1)
@@ -50,6 +54,7 @@ class CommandFlowTest(unittest.TestCase):
         )
 
     def test_save_and_flushdb(self) -> None:
+        # This checks persistence hooks still work after storage changes.
         manager = build_command_manager()
         manager.execute({"name": "SET", "args": ["persist:key", "value"]})
 
@@ -59,6 +64,17 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "FLUSHDB", "args": []}), 1)
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), [])
         self.assertTrue(APPEND_ONLY_FILE.exists())
+
+    def test_keys_sweeps_expired_entries_before_listing(self) -> None:
+        # This makes sure a full key listing purges expired entries before returning.
+        manager = build_command_manager()
+
+        manager.execute({"name": "SET", "args": ["live", "1"]})
+        manager.execute({"name": "SET", "args": ["soon:gone", "1", "EX", "1"]})
+
+        time.sleep(1.1)
+
+        self.assertEqual(manager.execute({"name": "KEYS", "args": []}), ["live"])
 
 
 if __name__ == "__main__":
