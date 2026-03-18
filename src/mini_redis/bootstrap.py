@@ -60,6 +60,7 @@ def build_command_manager(
         invalidation=invalidation,
         mongo=mongo,
     )
+    # Register Redis-owned work so persistence can trigger background jobs without breaking boundaries.
     persistence.register_background_hooks(redis.save, redis.rewrite_aof)
     recovery_report = persistence.restore(redis)
 

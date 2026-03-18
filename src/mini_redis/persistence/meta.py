@@ -21,6 +21,7 @@ class PersistenceMetadataStore:
             return json.load(handle)
 
     def save(self, payload: dict[str, Any]) -> Path:
+        # Keep the file human-readable since it is meant for debugging and inspection.
         with self._path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         return self._path

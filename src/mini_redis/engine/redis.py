@@ -96,6 +96,7 @@ class Redis:
         return removed
 
     def save(self) -> str:
+        # Snapshot payloads carry the AOF offset so restore can replay only newer entries.
         snapshot = {
             "storage": self._storage.items(),
             "ttl": self._ttl.export(),
@@ -132,6 +133,7 @@ class Redis:
     def rewrite_aof(self) -> str:
         entries: list[dict[str, Any]] = []
         ttl_remaining = self._ttl.export_remaining(self._storage)
+        # Rebuild AOF from live state instead of replaying the full historical log.
         for key, value in self._storage.items().items():
             ttl_seconds = ttl_remaining.get(key)
             args: list[Any] = [key, value, ttl_seconds]
@@ -155,6 +157,7 @@ class Redis:
         )
 
     def replay_operation(self, operation: str, args: list[Any]) -> None:
+        # Replay bypasses normal command handlers so restore can rebuild state quickly.
         name = operation.upper()
         if name == "SET" and len(args) >= 2:
             ttl_seconds = None if len(args) < 3 or args[2] is None else int(args[2])

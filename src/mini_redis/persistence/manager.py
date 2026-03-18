@@ -92,6 +92,8 @@ class PersistenceManager:
         aof_result = self._aof_writer.read_entries()
         aof_offset = 0
         snapshot_loaded = False
+
+        # The recovery policy decides whether we trust the snapshot, the AOF, or both.
         if self._recovery_policy in {"snapshot-first", "best-effort", "strict"} and snapshot is not None:
             redis.restore_snapshot(snapshot)
             self._operation_log = [
@@ -112,6 +114,7 @@ class PersistenceManager:
             )
 
         replayed_entries = 0
+        # Replay only the tail after the snapshot offset so we do not duplicate state.
         for entry in aof_result.entries[aof_offset:]:
             operation = str(entry["op"])
             args = list(entry.get("args", []))
@@ -173,6 +176,7 @@ class PersistenceManager:
         self._write_metadata(last_action="save")
 
     def register_background_hooks(self, save_fn: Any, rewrite_fn: Any) -> None:
+        # Persistence owns scheduling, but Redis owns the actual save/rewrite behavior.
         self._save_hook = save_fn
         self._rewrite_hook = rewrite_fn
 
@@ -262,6 +266,7 @@ class PersistenceManager:
         repair: dict[str, Any] | None = None,
     ) -> None:
         active_report = report or self._last_recovery_report
+        # Keep a compact operational snapshot on disk so restarts can inspect persistence state.
         self._metadata = {
             "schema_version": 2,
             "last_action": last_action,
@@ -302,6 +307,7 @@ class PersistenceManager:
             self._write_metadata(last_action=name)
 
         def runner() -> None:
+            # Background tasks update the same metadata surface as foreground work.
             try:
                 detail = str(fn())
                 state = BackgroundTaskState(name=name, status="completed", detail=detail)
@@ -324,6 +330,7 @@ class PersistenceManager:
 
     def _maybe_schedule_tasks(self) -> None:
         now = time()
+        # Autosave is time-based; autorewrite is growth-based.
         if (
             self._autosave_interval > 0
             and self._save_hook is not None

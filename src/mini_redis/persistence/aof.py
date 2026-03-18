@@ -31,6 +31,7 @@ class AOFWriter:
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"op": operation, "args": args}) + "\n")
             handle.flush()
+            # Match Redis-style durability tradeoffs with a small set of fsync policies.
             if self._fsync_policy == "always":
                 os.fsync(handle.fileno())
                 self._last_fsync_at = monotonic()
@@ -59,6 +60,7 @@ class AOFWriter:
                 try:
                     payload = json.loads(text)
                 except json.JSONDecodeError:
+                    # Stop at the first broken line and keep the valid prefix recoverable.
                     corruption_detected = True
                     corrupted_line = line_number
                     ignored_entries += 1
@@ -99,6 +101,7 @@ class AOFWriter:
             }
 
         if result.corruption_detected:
+            # Repair means truncating the file down to the last valid sequence of entries.
             self.rewrite(result.entries)
 
         return {
