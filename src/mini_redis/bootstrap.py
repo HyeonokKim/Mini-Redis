@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from mini_redis.commands.handlers.delete import DeleteHandler
 from mini_redis.commands.handlers.exists import ExistsHandler
 from mini_redis.commands.handlers.expire import ExpireHandler
@@ -12,6 +14,7 @@ from mini_redis.commands.handlers.keys import KeysHandler
 from mini_redis.commands.handlers.mget import MGetHandler
 from mini_redis.commands.handlers.ping import PingHandler
 from mini_redis.commands.handlers.quit import QuitHandler
+from mini_redis.commands.handlers.rewriteaof import RewriteAOFHandler
 from mini_redis.commands.handlers.save import SaveHandler
 from mini_redis.commands.handlers.set import SetHandler
 from mini_redis.commands.handlers.ttl import TTLHandler
@@ -27,12 +30,15 @@ from mini_redis.storage.mongo_adapter import MongoAdapter
 from mini_redis.storage.ttl import TTLManager
 
 
-def build_command_manager() -> CommandManager:
+def build_command_manager(
+    appendonly_path: Path | None = None,
+    snapshot_path: Path | None = None,
+) -> CommandManager:
     storage = StorageManager()
     ttl = TTLManager()
     persistence = PersistenceManager(
-        aof_writer=AOFWriter(APPEND_ONLY_FILE),
-        snapshot_store=RDBSnapshotStore(SNAPSHOT_FILE),
+        aof_writer=AOFWriter(appendonly_path or APPEND_ONLY_FILE),
+        snapshot_store=RDBSnapshotStore(snapshot_path or SNAPSHOT_FILE),
     )
     invalidation = InvalidationManager()
     mongo = MongoAdapter(enabled=False)
@@ -43,6 +49,7 @@ def build_command_manager() -> CommandManager:
         invalidation=invalidation,
         mongo=mongo,
     )
+    recovery_report = persistence.restore(redis)
 
     handlers = {
         "PING": PingHandler(redis),
@@ -56,7 +63,8 @@ def build_command_manager() -> CommandManager:
         "TTL": TTLHandler(redis),
         "KEYS": KeysHandler(redis),
         "FLUSHDB": FlushDBHandler(redis),
+        "REWRITEAOF": RewriteAOFHandler(redis),
         "SAVE": SaveHandler(redis),
         "QUIT": QuitHandler(redis),
     }
-    return CommandManager(handlers=handlers)
+    return CommandManager(handlers=handlers, recovery_report=recovery_report)

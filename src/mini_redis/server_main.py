@@ -9,12 +9,21 @@ from mini_redis.protocol.resp import RespCodec
 
 
 def main() -> None:
+    manager = build_command_manager()
+    report = manager.recovery_report
     server = TCPServer(
         host=HOST,
         port=PORT,
-        manager=build_command_manager(),
+        manager=manager,
         codec=RespCodec(),
     )
+    if report is not None:
+        print(
+            "Recovery summary:"
+            f" snapshot_loaded={report.snapshot_loaded}"
+            f" replayed_entries={report.replayed_entries}"
+            f" recovered_keys={report.recovered_keys}"
+        )
     print(f"Mini Redis server listening on {HOST}:{PORT}")
     try:
         server.serve_forever()

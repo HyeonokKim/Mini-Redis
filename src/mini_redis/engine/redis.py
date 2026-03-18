@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from mini_redis.persistence.invalidation import InvalidationManager
 from mini_redis.persistence.manager import PersistenceManager
 from mini_redis.storage.manager import StorageManager
@@ -98,9 +100,60 @@ class Redis:
             "storage": self._storage.items(),
             "ttl": self._ttl.export(),
             "operation_log": [list(entry) for entry in self._persistence.operation_log],
+            "aof_offset": len(self._persistence.operation_log),
         }
         path = self._persistence.save_snapshot(snapshot)
         return str(path)
+
+    def rewrite_aof(self) -> str:
+        entries: list[dict[str, Any]] = []
+        ttl_remaining = self._ttl.export_remaining(self._storage)
+        for key, value in self._storage.items().items():
+            ttl_seconds = ttl_remaining.get(key)
+            args: list[Any] = [key, value, ttl_seconds]
+            entries.append({"op": "SET", "args": args})
+        path = self._persistence.rewrite_aof(entries)
+        return str(path)
+
+    def restore_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self._storage.load_items(
+            {str(key): str(value) for key, value in snapshot.get("storage", {}).items()}
+        )
+        self._ttl.load_expirations(
+            {str(key): str(value) for key, value in snapshot.get("ttl", {}).items()},
+            self._storage,
+        )
+
+    def replay_operation(self, operation: str, args: list[Any]) -> None:
+        name = operation.upper()
+        if name == "SET" and len(args) >= 2:
+            ttl_seconds = None if len(args) < 3 or args[2] is None else int(args[2])
+            self._storage.set(str(args[0]), str(args[1]))
+            self._ttl.set_expiration(str(args[0]), ttl_seconds)
+            return
+        if name == "DELETE" and args:
+            key = str(args[0])
+            self._ttl.clear_expiration(key)
+            self._storage.delete(key)
+            return
+        if name == "EXPIRE" and len(args) == 2:
+            key = str(args[0])
+            if self._storage.exists(key):
+                self._ttl.set_expiration(key, int(args[1]))
+            return
+        if name == "INCR" and args:
+            current = self._storage.get(str(args[0]))
+            next_value = 1 if current is None else int(current) + 1
+            self._storage.set(str(args[0]), str(next_value))
+            return
+        if name == "FLUSHDB":
+            self._storage.clear()
+            self._ttl.clear_all()
+            return
+
+    def key_count(self) -> int:
+        self._ttl.purge_expired_keys(self._storage)
+        return len(self._storage.items())
 
     def quit(self) -> str:
         return "BYE"

@@ -18,3 +18,10 @@ class RDBSnapshotStore:
         with self._path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         return self._path
+
+    def load(self) -> dict[str, Any] | None:
+        if not self._path.exists():
+            return None
+
+        with self._path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
