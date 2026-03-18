@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any
+
+
+@dataclass(frozen=True)
+class AOFReadResult:
+    entries: list[dict[str, Any]]
+    corruption_detected: bool
+    ignored_entries: int
+    corrupted_line: int | None
 
 
 class AOFWriter:
@@ -18,18 +27,48 @@ class AOFWriter:
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"op": operation, "args": args}) + "\n")
 
-    def read_entries(self) -> list[dict[str, Any]]:
+    def read_entries(self) -> AOFReadResult:
         if not self._path.exists():
-            return []
+            return AOFReadResult(
+                entries=[],
+                corruption_detected=False,
+                ignored_entries=0,
+                corrupted_line=None,
+            )
 
         entries: list[dict[str, Any]] = []
+        corruption_detected = False
+        ignored_entries = 0
+        corrupted_line: int | None = None
         with self._path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, start=1):
                 text = line.strip()
                 if not text:
                     continue
-                entries.append(json.loads(text))
-        return entries
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    corruption_detected = True
+                    corrupted_line = line_number
+                    ignored_entries += 1
+                    ignored_entries += sum(1 for remaining in handle if remaining.strip())
+                    break
+
+                if not isinstance(payload, dict) or "op" not in payload:
+                    corruption_detected = True
+                    corrupted_line = line_number
+                    ignored_entries += 1
+                    ignored_entries += sum(1 for remaining in handle if remaining.strip())
+                    break
+
+                entries.append(payload)
+
+        return AOFReadResult(
+            entries=entries,
+            corruption_detected=corruption_detected,
+            ignored_entries=ignored_entries,
+            corrupted_line=corrupted_line,
+        )
 
     def rewrite(self, entries: list[dict[str, Any]]) -> Path:
         with self._path.open("w", encoding="utf-8") as handle:

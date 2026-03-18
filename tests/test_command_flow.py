@@ -26,6 +26,8 @@ class CommandFlowTest(unittest.TestCase):
         self.assertIsNotNone(manager.recovery_report)
         self.assertFalse(manager.recovery_report.snapshot_loaded)
         self.assertEqual(manager.recovery_report.replayed_entries, 0)
+        self.assertFalse(manager.recovery_report.aof_corruption_detected)
+        self.assertEqual(manager.recovery_report.ignored_aof_entries, 0)
 
         self.assertEqual(manager.execute({"name": "PING", "args": []}), "PONG")
         self.assertEqual(manager.execute({"name": "SET", "args": ["user:1", "hello"]}), "OK")
@@ -77,6 +79,18 @@ class CommandFlowTest(unittest.TestCase):
         self.assertEqual(manager.execute({"name": "KEYS", "args": []}), [])
         self.assertTrue(self.appendonly_path.exists())
 
+    def test_load_restores_snapshot_without_replaying_newer_aof_entries(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["persist:key", "value"]})
+        manager.execute({"name": "SAVE", "args": []})
+        manager.execute({"name": "SET", "args": ["persist:key", "new-value"]})
+
+        self.assertEqual(manager.execute({"name": "LOAD", "args": []}), "OK")
+        self.assertEqual(
+            manager.execute({"name": "GET", "args": ["persist:key"]}),
+            "value",
+        )
+
     def test_restore_replays_only_aof_entries_after_snapshot(self) -> None:
         manager = self.build_manager()
         manager.execute({"name": "SET", "args": ["count", "5"]})
@@ -114,6 +128,20 @@ class CommandFlowTest(unittest.TestCase):
         lines = rewritten_path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(lines), 2)
         self.assertTrue(any('"op": "SET"' in line for line in lines))
+
+    def test_restore_ignores_corrupted_aof_tail(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["safe", "value"]})
+        self.appendonly_path.write_text(
+            self.appendonly_path.read_text(encoding="utf-8") + '{"op": "SET", "args": ["broken"]\n',
+            encoding="utf-8",
+        )
+
+        restored = self.build_manager()
+        self.assertTrue(restored.recovery_report.aof_corruption_detected)
+        self.assertEqual(restored.recovery_report.ignored_aof_entries, 1)
+        self.assertIsNotNone(restored.recovery_report.corrupted_aof_line)
+        self.assertEqual(restored.execute({"name": "GET", "args": ["safe"]}), "value")
 
 
 if __name__ == "__main__":

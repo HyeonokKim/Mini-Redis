@@ -11,6 +11,7 @@ from mini_redis.commands.handlers.flushdb import FlushDBHandler
 from mini_redis.commands.handlers.get import GetHandler
 from mini_redis.commands.handlers.incr import IncrHandler
 from mini_redis.commands.handlers.keys import KeysHandler
+from mini_redis.commands.handlers.load import LoadHandler
 from mini_redis.commands.handlers.mget import MGetHandler
 from mini_redis.commands.handlers.ping import PingHandler
 from mini_redis.commands.handlers.quit import QuitHandler
@@ -62,6 +63,7 @@ def build_command_manager(
         "EXPIRE": ExpireHandler(redis),
         "TTL": TTLHandler(redis),
         "KEYS": KeysHandler(redis),
+        "LOAD": LoadHandler(redis),
         "FLUSHDB": FlushDBHandler(redis),
         "REWRITEAOF": RewriteAOFHandler(redis),
         "SAVE": SaveHandler(redis),

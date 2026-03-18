@@ -105,6 +105,12 @@ class Redis:
         path = self._persistence.save_snapshot(snapshot)
         return str(path)
 
+    def load(self) -> str:
+        loaded = self._persistence.load_snapshot(self)
+        if not loaded:
+            return "ERR snapshot file does not exist"
+        return "OK"
+
     def rewrite_aof(self) -> str:
         entries: list[dict[str, Any]] = []
         ttl_remaining = self._ttl.export_remaining(self._storage)
@@ -150,6 +156,10 @@ class Redis:
             self._storage.clear()
             self._ttl.clear_all()
             return
+
+    def reset_state(self) -> None:
+        self._storage.clear()
+        self._ttl.clear_all()
 
     def key_count(self) -> int:
         self._ttl.purge_expired_keys(self._storage)

@@ -23,6 +23,9 @@ def main() -> None:
             f" snapshot_loaded={report.snapshot_loaded}"
             f" replayed_entries={report.replayed_entries}"
             f" recovered_keys={report.recovered_keys}"
+            f" aof_corruption_detected={report.aof_corruption_detected}"
+            f" ignored_aof_entries={report.ignored_aof_entries}"
+            f" corrupted_aof_line={report.corrupted_aof_line}"
         )
     print(f"Mini Redis server listening on {HOST}:{PORT}")
     try:
