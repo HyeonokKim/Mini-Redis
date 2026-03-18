@@ -32,6 +32,14 @@ class PersistenceManager:
         self._operation_log: list[tuple[object, ...]] = []
         self._aof_writer = aof_writer
         self._snapshot_store = snapshot_store
+        self._last_recovery_report = RecoveryReport(
+            snapshot_loaded=False,
+            replayed_entries=0,
+            recovered_keys=0,
+            aof_corruption_detected=False,
+            ignored_aof_entries=0,
+            corrupted_aof_line=None,
+        )
 
     def append(self, operation: str, *args: object) -> None:
         self._operation_log.append((operation, *args))
@@ -62,7 +70,7 @@ class PersistenceManager:
             self._operation_log.append((operation, *args))
             replayed_entries += 1
 
-        return RecoveryReport(
+        report = RecoveryReport(
             snapshot_loaded=snapshot_loaded,
             replayed_entries=replayed_entries,
             recovered_keys=redis.key_count(),
@@ -70,6 +78,8 @@ class PersistenceManager:
             ignored_aof_entries=aof_result.ignored_entries,
             corrupted_aof_line=aof_result.corrupted_line,
         )
+        self._last_recovery_report = report
+        return report
 
     def load_snapshot(self, redis: "Redis") -> bool:
         snapshot = self._snapshot_store.load()
@@ -86,6 +96,31 @@ class PersistenceManager:
     def rewrite_aof(self, state_entries: list[dict[str, Any]]) -> Path:
         return self._aof_writer.rewrite(state_entries)
 
+    def info(self) -> dict[str, Any]:
+        aof_path = self._aof_writer._path
+        snapshot_path = self._snapshot_store._path
+        return {
+            "aof_path": str(aof_path),
+            "aof_exists": aof_path.exists(),
+            "aof_size": aof_path.stat().st_size if aof_path.exists() else 0,
+            "snapshot_path": str(snapshot_path),
+            "snapshot_exists": snapshot_path.exists(),
+            "snapshot_size": snapshot_path.stat().st_size if snapshot_path.exists() else 0,
+            "operation_log_length": len(self._operation_log),
+            "last_recovery": {
+                "snapshot_loaded": self._last_recovery_report.snapshot_loaded,
+                "replayed_entries": self._last_recovery_report.replayed_entries,
+                "recovered_keys": self._last_recovery_report.recovered_keys,
+                "aof_corruption_detected": self._last_recovery_report.aof_corruption_detected,
+                "ignored_aof_entries": self._last_recovery_report.ignored_aof_entries,
+                "corrupted_aof_line": self._last_recovery_report.corrupted_aof_line,
+            },
+        }
+
     @property
     def operation_log(self) -> list[tuple[object, ...]]:
         return list(self._operation_log)
+
+    @property
+    def last_recovery_report(self) -> RecoveryReport:
+        return self._last_recovery_report

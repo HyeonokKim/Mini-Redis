@@ -32,6 +32,7 @@ Example commands:
 PING
 SET user:1 hello
 GET user:1
+INFO PERSISTENCE
 MGET user:1 user:2
 EXISTS user:1
 INCR counter

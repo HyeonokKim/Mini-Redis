@@ -68,6 +68,18 @@ class CommandFlowTest(unittest.TestCase):
             ["2", "10", None],
         )
 
+    def test_info_persistence_reports_runtime_state(self) -> None:
+        manager = self.build_manager()
+        manager.execute({"name": "SET", "args": ["alpha", "1"]})
+        manager.execute({"name": "SAVE", "args": []})
+
+        info = manager.execute({"name": "INFO", "args": ["PERSISTENCE"]})
+        self.assertEqual(info["key_count"], 1)
+        self.assertTrue(info["snapshot_exists"])
+        self.assertTrue(info["aof_exists"])
+        self.assertGreaterEqual(info["operation_log_length"], 1)
+        self.assertIn("last_recovery", info)
+
     def test_save_and_flushdb(self) -> None:
         manager = self.build_manager()
         manager.execute({"name": "SET", "args": ["persist:key", "value"]})

@@ -111,6 +111,14 @@ class Redis:
             return "ERR snapshot file does not exist"
         return "OK"
 
+    def info(self, section: str) -> dict[str, Any] | str:
+        normalized = section.upper()
+        if normalized == "PERSISTENCE":
+            payload = self._persistence.info()
+            payload["key_count"] = self.key_count()
+            return payload
+        return "ERR unsupported INFO section"
+
     def rewrite_aof(self) -> str:
         entries: list[dict[str, Any]] = []
         ttl_remaining = self._ttl.export_remaining(self._storage)
