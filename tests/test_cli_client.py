@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from mini_redis.cli.client import CLIClient
+from mini_redis.network.tcp_client import TimedResponse
 from mini_redis.protocol.resp import RespCodec
 
 
@@ -12,18 +13,31 @@ class _FakeTCPClient:
         self.commands: list[dict[str, object]] = []
 
     def send(self, command):
+        return self.send_timed(command).value
+
+    def send_timed(self, command):
         self.commands.append(command)
         if command["name"] == "PING":
-            return "PONG"
+            return TimedResponse(value="PONG", server_time_ms=0.041)
         if command["name"] == "SET":
-            return "OK"
+            return TimedResponse(value="OK", server_time_ms=0.052)
         if command["name"] == "MGET":
-            return ["hello", None, "42"]
+            return TimedResponse(value=["hello", None, "42"], server_time_ms=0.083)
         if command["name"] == "INFO":
-            return "# Persistence\r\nkey_count:1"
+            return TimedResponse(value="# Persistence\r\nkey_count:1", server_time_ms=0.091)
+        if command["name"] == "INSPECT":
+            return TimedResponse(
+                value="[table size: 4] [resizing: False] [keys: 0] [rehash table size: 0] [progress: 1.0] [last request: n/a]",
+                server_time_ms=0.067,
+            )
+        if command["name"] == "PROBE":
+            return TimedResponse(value="OK", server_time_ms=0.071)
         if command["name"] == "QUIT":
-            return "BYE"
-        return "OK"
+            return TimedResponse(value="BYE", server_time_ms=0.033)
+        return TimedResponse(
+            value=f"ERR unexpected command '{command['name']}'",
+            server_time_ms=0.025,
+        )
 
 
 class CLIClientTest(unittest.TestCase):
@@ -49,8 +63,8 @@ class CLIClientTest(unittest.TestCase):
         self.assertIn("Mini Redis Presentation CLI", rendered)
         self.assertIn("status : READY", rendered)
         self.assertIn("Presenter Shortcuts", rendered)
-        self.assertIn("[ok | 1.0 ms] OK", rendered)
-        self.assertIn("[list | 2.0 ms]", rendered)
+        self.assertIn("[ok | server 0.052 ms | round-trip 1.0 ms] OK", rendered)
+        self.assertIn("[list | server 0.083 ms | round-trip 2.0 ms]", rendered)
         self.assertIn("1. hello", rendered)
         self.assertIn("2. (nil)", rendered)
         self.assertIn("Suggested Demo Flow", rendered)
@@ -100,7 +114,7 @@ class CLIClientProbeModeTest(unittest.TestCase):
             [{"name": "INSPECT", "args": ["STORAGE"]}] * 3,
         )
         self.assertIn("[watch 1/3]", output)
-        self.assertIn("OK", output)
+        self.assertIn("[table size: 4]", output)
 
     def test_liveset_mode_generates_probe_set_requests(self) -> None:
         tcp_client = _FakeTCPClient()

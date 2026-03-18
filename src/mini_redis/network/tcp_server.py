@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import socketserver
+from time import perf_counter_ns
 
 from mini_redis.commands.manager import CommandManager
+from mini_redis.network.timing import wrap_timed_response
 from mini_redis.protocol.resp import RespCodec
 
 
@@ -21,8 +23,11 @@ class _RequestHandler(socketserver.StreamRequestHandler):
             except (OSError, ValueError):
                 return
 
+            started = perf_counter_ns()
             response = self.manager.execute(command)
-            self.wfile.write(self.codec.encode_response(response))
+            server_time_us = (perf_counter_ns() - started) // 1000
+            payload = wrap_timed_response(response, int(server_time_us))
+            self.wfile.write(self.codec.encode_response(payload))
             self.wfile.flush()
 
             if command["name"] == "QUIT":
